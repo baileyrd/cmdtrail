@@ -8,6 +8,43 @@ use crossterm::{
 };
 use std::io::{stderr, Write};
 
+/// RAII guard for the picker's terminal takeover: enables raw mode and
+/// hides the cursor on construction, and unconditionally restores both
+/// (plus clearing everything the picker drew) on drop — including on
+/// early return via `?` from anywhere in `pick`. Without this, a
+/// mid-render I/O error would strand the invoking shell's terminal in
+/// raw mode with no visible cursor.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn new() -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        if let Err(e) = execute!(stderr(), cursor::Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(e.into());
+        }
+        Ok(TerminalGuard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Best-effort: we're in a Drop impl, so errors here have nowhere
+        // to go. The picker always leaves the cursor back on the row it
+        // started at (see `render`'s trailing `MoveUp`), so clearing
+        // everything from there down removes exactly what was drawn,
+        // regardless of how many rows that ended up being.
+        let mut out = stderr();
+        let _ = queue!(
+            out,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::FromCursorDown)
+        );
+        let _ = execute!(out, cursor::Show, ResetColor);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
 /// Renders `items` (best-first) to stderr with a type-to-filter prompt.
 /// Returns the chosen string on Enter, or None on Esc/Ctrl-C.
 ///
@@ -19,9 +56,7 @@ pub fn pick(items: &[String]) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let mut out = stderr();
-    terminal::enable_raw_mode()?;
-    execute!(out, cursor::Hide)?;
+    let _guard = TerminalGuard::new()?;
 
     let mut query = String::new();
     let mut selected: usize = 0;
@@ -53,9 +88,7 @@ pub fn pick(items: &[String]) -> Result<Option<String>> {
                     }
                 }
                 KeyCode::Up => {
-                    if selected > 0 {
-                        selected -= 1;
-                    }
+                    selected = selected.saturating_sub(1);
                 }
                 KeyCode::Char(c) => {
                     query.push(c);
@@ -65,16 +98,6 @@ pub fn pick(items: &[String]) -> Result<Option<String>> {
             }
         }
     };
-
-    // Clean up: clear the lines we drew.
-    let lines_drawn = (items.len().min(10) + 1) as u16;
-    queue!(out, cursor::MoveToColumn(0))?;
-    for _ in 0..lines_drawn {
-        queue!(out, terminal::Clear(ClearType::CurrentLine), cursor::MoveUp(1))?;
-    }
-    queue!(out, terminal::Clear(ClearType::CurrentLine))?;
-    execute!(out, cursor::Show, ResetColor)?;
-    terminal::disable_raw_mode()?;
 
     Ok(result)
 }

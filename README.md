@@ -58,3 +58,16 @@ Windows).
   binary), bash has no native equivalent without `ble.sh`.
 - History pruning/export.
 - Cross-machine sync.
+- Secret redaction / an ignore-list for commands that shouldn't be logged
+  (e.g. ones with inline tokens or passwords). Command text is currently
+  stored verbatim and unencrypted, indefinitely, with no opt-out.
+
+## Known limitations
+
+- On Windows, `cwd`/`git_root` are lowercased before storage and lookup so
+  that differently-cased spellings of the same directory (e.g. `C:\Dev\Foo`
+  vs `c:\dev\foo`) match. This only applies going forward — rows written by
+  a build predating this normalization keep their original casing.
+- The lowest-weight "run anywhere" suggestion tier draws from a bounded,
+  most-recent sample (500 rows) of history outside the current cwd/repo,
+  not the full table, to keep `suggest` cheap on large histories.

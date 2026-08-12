@@ -3,7 +3,7 @@ mod git;
 mod picker;
 mod rank;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,8 +66,9 @@ fn main() -> Result<()> {
             shell,
             exit_code,
         } => {
+            let cwd = git::normalize_path(&cwd);
             let git_root = git::find_git_root(std::path::Path::new(&cwd))
-                .map(|p| p.to_string_lossy().to_string());
+                .map(|p| git::normalize_path(&p.to_string_lossy()));
             database.log(&command, &cwd, git_root.as_deref(), &shell, exit_code, now_ts())?;
         }
         Command::Suggest {
@@ -76,9 +77,16 @@ fn main() -> Result<()> {
             query,
             pick,
         } => {
-            let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap().to_string_lossy().to_string());
+            let cwd = match cwd {
+                Some(c) => c,
+                None => std::env::current_dir()
+                    .context("could not determine current directory")?
+                    .to_string_lossy()
+                    .to_string(),
+            };
+            let cwd = git::normalize_path(&cwd);
             let git_root = git::find_git_root(std::path::Path::new(&cwd))
-                .map(|p| p.to_string_lossy().to_string());
+                .map(|p| git::normalize_path(&p.to_string_lossy()));
 
             let entries = database.candidates(&cwd, git_root.as_deref())?;
             let ranked_limit = if pick { 200 } else { limit };

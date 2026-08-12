@@ -15,6 +15,23 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Normalize a path string for storage/comparison across `log`/`suggest`
+/// calls. Windows filesystem lookups are case-insensitive (NTFS preserves
+/// case but doesn't distinguish on lookup), so two differently-cased
+/// spellings of the same directory must compare equal, or the "exact cwd"
+/// / "same repo" ranking tiers in `rank::scope_weight` silently miss
+/// matches. Elsewhere, paths are case-sensitive by convention, so we leave
+/// them untouched.
+#[cfg(windows)]
+pub fn normalize_path(s: &str) -> String {
+    s.to_lowercase()
+}
+
+#[cfg(not(windows))]
+pub fn normalize_path(s: &str) -> String {
+    s.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +58,16 @@ mod tests {
         let result = find_git_root(&tmp);
         fs::remove_dir_all(&tmp).ok();
         assert!(result.is_none() || result.unwrap() != tmp);
+    }
+
+    #[test]
+    fn normalize_path_is_case_insensitive_on_windows_only() {
+        let a = normalize_path("C:\\Dev\\Foo");
+        let b = normalize_path("c:\\dev\\foo");
+        if cfg!(windows) {
+            assert_eq!(a, b);
+        } else {
+            assert_ne!(a, b);
+        }
     }
 }

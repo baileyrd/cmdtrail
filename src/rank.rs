@@ -6,6 +6,7 @@
 //!   - exact cwd match:      weight 1.00
 //!   - same git repo, other subdir: weight 0.50
 //!   - everywhere else:      weight 0.15
+//!
 //! Within a tier, more recent and more frequent runs score higher, and
 //! runs that exited non-zero are discounted (still shown, just lower).
 
