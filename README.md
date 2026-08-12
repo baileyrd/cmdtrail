@@ -218,6 +218,18 @@ Two findings, reported as measured rather than as expected:
     small `WHERE ts > last_refresh_ts` query against raw `commands` for
     anything newer, merged at read time — not a straight swap of the
     fetch source.
+- Inline (not GUI-popup) Ctrl+G picker for PowerShell. Current state:
+  `Out-GridView`, a separate window — functional and fixed the hang bug
+  (see git history), but not the desired UX. Wanted: an in-terminal
+  dropdown under the prompt line, matching the look of PSReadLine's own
+  native `-PredictionViewStyle ListView` history dropdown (arrow-key
+  navigable list rendered directly under the current line, no separate
+  window). Likely approach: reimplement the picker natively in the
+  PowerShell hook using PSReadLine's own buffer/console APIs
+  (`[Microsoft.PowerShell.PSConsoleReadLine]`), not a spawned process —
+  a spawned process taking raw console input from inside a PSReadLine
+  key handler is exactly what caused the hang bug in the first place, so
+  any inline-UI approach must stay in-process. Not started.
 
 ## Known limitations
 
