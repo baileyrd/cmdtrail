@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Per-directory command history capture and suggestion"
 
+[lib]
+name = "cmdtrail"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cmdtrail"
 path = "src/main.rs"

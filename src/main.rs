@@ -1,9 +1,4 @@
-mod db;
-mod duration;
-mod git;
-mod ignore;
-mod picker;
-mod rank;
+use cmdtrail::{db, duration, git, ignore, picker, rank};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};

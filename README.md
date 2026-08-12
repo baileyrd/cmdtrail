@@ -130,6 +130,44 @@ through a generic file-sync tool risks corruption). Instead:
 Every machine converges to the union of everyone's history. Export size
 only grows, so pair this with `cmdtrail prune` if that matters to you.
 
+## Storage benchmark: SQLite vs JSON-L
+
+`cargo run --release --example storage_bench` — an isolated harness
+comparing cmdtrail's real SQLite storage (`db::Db`, the actual production
+code, not a reimplementation) against a flat JSON Lines file (the format
+`cmdtrail export` already writes, and what Claude Code-style transcripts
+use). Scenario: a directory with a fixed 20 matching rows inside a shell
+history that's otherwise huge (N rows spread across 500 other
+directories) — the realistic case an index is supposed to help with.
+
+Measured on this machine:
+
+| N       | write (sqlite / jsonl) | `suggest` real query (sqlite) | full scan (sqlite / jsonl) |
+|---------|-------------------------|-------------------------------|------------------------------|
+| 1,000   | 794ms / 184ms           | 1.4ms                         | 49.6ms / 1.0ms                |
+| 10,000  | 8.3s / 2.8s             | 28.8ms                        | 90.9ms / 25.4ms                |
+| 100,000 | 101.7s / 40.6s          | 236.4ms                       | 135.6ms / 80.1ms               |
+
+Two findings, reported as measured rather than as expected:
+
+- **Write**: SQLite is ~2-3x slower per row than a JSON-L append (one
+  transaction + WAL commit vs one `write` + `flush`). In practice this
+  doesn't matter: real `cmdtrail log` calls are separate process
+  invocations from a shell hook, where OS process-spawn cost (single-digit
+  to tens of ms) already dwarfs a sub-millisecond difference in commit
+  cost.
+- **Read — the one that matters, since zsh ghost-text calls `suggest` on
+  every keystroke**: at 100k rows, cmdtrail's real indexed `suggest`
+  query (236ms) is *slower* than a naive full linear scan of a flat
+  JSON-L file (80ms). Root cause: the "everywhere else" fallback tier's
+  `ORDER BY ts DESC LIMIT 500` has no index on `ts`, so it still forces a
+  scan-and-sort of nearly the whole table even though the exact-cwd/
+  same-repo tiers are properly indexed. This is a real, fixable
+  regression the benchmark surfaced — not implemented here since it's new
+  scope beyond this comparison, but `CREATE INDEX ON commands(ts)` (or
+  restructuring the global-tier query to avoid the sort) is the concrete
+  next step if `suggest` latency matters on a large history.
+
 ## Not yet built (phase 2 candidates)
 
 - Ghost-text-as-you-type for PowerShell and bash (zsh has it — see above).
@@ -155,7 +193,10 @@ only grows, so pair this with `cmdtrail prune` if that matters to you.
   a build predating this normalization keep their original casing.
 - The lowest-weight "run anywhere" suggestion tier draws from a bounded,
   most-recent sample (500 rows) of history outside the current cwd/repo,
-  not the full table, to keep `suggest` cheap on large histories.
+  not the full table, to keep `suggest` cheap on large histories — though
+  the `ORDER BY ts DESC LIMIT 500` behind that sample isn't itself
+  indexed, so it's not as cheap as it should be; see "Storage benchmark"
+  for measured numbers and the fix.
 - The ignore list (see "Ignoring commands") is a manual opt-out, not
   automatic secret detection — nothing scans command text for
   credential-shaped strings, so an un-listed command with a secret in it
