@@ -34,10 +34,29 @@ zsh (`~/.zshrc`):
 
     echo 'eval "$(cmdtrail init zsh)"' >> ~/.zshrc
 
-Each hook does two things: logs every command you run on your prompt, and
+Each hook does three things: logs every command you run on your prompt,
 binds **Ctrl+G** to open an interactive type-to-filter picker (rendered by
-the binary itself) scoped to your current directory. Selecting an entry
-inserts it into your current line, ready to edit or run.
+the binary itself) scoped to your current directory, and (zsh only, see
+below) shows an inline ghost-text suggestion as you type. Selecting a
+picker entry, or accepting a ghost-text suggestion, inserts it into your
+current line, ready to edit or run.
+
+### Ghost-text-as-you-type (zsh only)
+
+zsh shows the single best-ranked suggestion as dimmed text after your
+cursor while you type, like zsh-autosuggestions — but backed by cmdtrail's
+directory-aware ranking instead of a plain history search. Self-contained
+(no zsh-autosuggestions plugin dependency): it's a `zle` `line-pre-redraw`
+hook using zsh's own bundled `add-zle-hook-widget`. Press **Right arrow**
+or **End** (with the cursor already at the end of the line) to accept.
+
+It forks `cmdtrail suggest` synchronously on every edited keystroke
+(debounced against unchanged buffers and mid-line cursor positions) — fine
+on typical histories, possibly noticeable on very large ones. Set
+`CMDTRAIL_GHOST_TEXT=0` before the hook loads to disable it and keep only
+the Ctrl+G picker.
+
+PowerShell and bash don't have this yet — see "Not yet built" for why.
 
 ## CLI
 
@@ -67,11 +86,20 @@ Blank lines and lines starting with `#` are ignored.
 
 ## Not yet built (phase 2 candidates)
 
-- True ghost-text-as-you-type instead of a keybinding-triggered picker.
-  Feasible per-shell but each needs a different mechanism: zsh via a custom
-  `zsh-autosuggestions` strategy, PowerShell via a PSReadLine
-  `ICommandPredictor` plugin (.NET, would need an IPC bridge to this
-  binary), bash has no native equivalent without `ble.sh`.
+- Ghost-text-as-you-type for PowerShell and bash (zsh has it — see above).
+  - PowerShell needs a `PSReadLine` `ICommandPredictor` plugin, which
+    Microsoft's own docs require as a *compiled* C# assembly (`dotnet
+    build` against the PowerShell SDK NuGet package) — there's no
+    documented PowerShell-script-only path.
+  - bash has no native ghost-text hook at all. `ble.sh` is the only
+    candidate, but its completion system (`complete -F func cmdname`) is
+    per-command — it completes arguments of an already-typed command, not
+    "replace the whole line with a different suggested command," which is
+    the wrong shape for cmdtrail's suggestions.
+  - Both are unimplemented by decision, not just unstarted: implementing
+    either without a way to compile/run and verify it (no .NET SDK, no
+    ble.sh install, no working WSL on the dev machine this was built on)
+    would mean shipping untested shell-integration code.
 - History pruning/export.
 - Cross-machine sync.
 
