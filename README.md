@@ -186,6 +186,38 @@ Two findings, reported as measured rather than as expected:
     either without a way to compile/run and verify it (no .NET SDK, no
     ble.sh install, no working WSL on the dev machine this was built on)
     would mean shipping untested shell-integration code.
+- `command_stats` rollup table to fix candidate-window crowding and cut
+  `suggest` read cost further. Design, deferred (not started):
+  - Problem: `commands` is append-only with no dedup, so a command run
+    thousands of times in one directory can fill the entire
+    `SCOPED_CANDIDATE_LIMIT = 5000` window with just that one command,
+    crowding out other distinct commands from that directory's candidate
+    set entirely.
+  - New table, one row per unique `(command, cwd)`: `command_stats
+    (command, cwd, git_root, run_count, last_ts, last_exit_code, PRIMARY
+    KEY (command, cwd))`. `commands` itself is untouched — still the
+    full, append-only source of truth for `export`/`import`/`prune`.
+  - Refresh is a full rebuild (`DELETE` + `INSERT ... GROUP BY` in one
+    transaction), not incremental — simpler, no drift bugs. Triggered
+    only during a detected idle gap on `cmdtrail log` (a command follows
+    a >threshold gap since the previous one), never on rapid-fire
+    typing, so the rebuild cost never lands on a latency-sensitive path.
+    Also re-run right after `prune`/`import`, since both bulk-mutate
+    `commands` and would otherwise leave `command_stats` stale until the
+    next idle window.
+  - Idle threshold: default should be sized off the *measured* rebuild
+    cost at whatever history size is typical (the storage benchmark's
+    "full scan" numbers are the closest proxy so far — tens to ~100ms at
+    100k rows), with a comfortable safety margin, and must be
+    user-configurable via an env var (same pattern as
+    `CMDTRAIL_GHOST_TEXT`) — not a hardcoded constant.
+  - The gap that makes this non-trivial: a rollup refreshed only on idle
+    would miss commands run in the *current* active session, which are
+    exactly the most valuable suggestions ("I ran this 5 minutes ago in
+    this repo"). `suggest` must read `command_stats` for the bulk plus a
+    small `WHERE ts > last_refresh_ts` query against raw `commands` for
+    anything newer, merged at read time — not a straight swap of the
+    fetch source.
 
 ## Known limitations
 
