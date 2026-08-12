@@ -78,6 +78,7 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_commands_cwd ON commands(cwd);
             CREATE INDEX IF NOT EXISTS idx_commands_git_root ON commands(git_root);
+            CREATE INDEX IF NOT EXISTS idx_commands_ts ON commands(ts);
             ",
         )?;
         Ok(Db { conn })

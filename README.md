@@ -140,33 +140,35 @@ use). Scenario: a directory with a fixed 20 matching rows inside a shell
 history that's otherwise huge (N rows spread across 500 other
 directories) — the realistic case an index is supposed to help with.
 
-Measured on this machine:
+Measured on this machine, before and after adding an index on `ts`
+(`idx_commands_ts`) to fix the finding below:
 
-| N       | write (sqlite / jsonl) | `suggest` real query (sqlite) | full scan (sqlite / jsonl) |
-|---------|-------------------------|-------------------------------|------------------------------|
-| 1,000   | 794ms / 184ms           | 1.4ms                         | 49.6ms / 1.0ms                |
-| 10,000  | 8.3s / 2.8s             | 28.8ms                        | 90.9ms / 25.4ms                |
-| 100,000 | 101.7s / 40.6s          | 236.4ms                       | 135.6ms / 80.1ms               |
+| N       | write (sqlite / jsonl) | `suggest` real query (sqlite): before → after | full scan (sqlite / jsonl) |
+|---------|-------------------------|--------------------------------------------------|------------------------------|
+| 1,000   | 784ms / 204ms           | 1.4ms → 0.8ms                                     | 60.8ms / 1.8ms                |
+| 10,000  | 9.5s / 2.9s             | 28.8ms → 0.9ms (32x)                              | 75.8ms / 63.0ms                |
+| 100,000 | 110.9s / 25.3s          | 236.4ms → 0.8ms (295x)                            | 114.4ms / 77.1ms               |
 
 Two findings, reported as measured rather than as expected:
 
-- **Write**: SQLite is ~2-3x slower per row than a JSON-L append (one
+- **Write**: SQLite is ~2-4x slower per row than a JSON-L append (one
   transaction + WAL commit vs one `write` + `flush`). In practice this
   doesn't matter: real `cmdtrail log` calls are separate process
   invocations from a shell hook, where OS process-spawn cost (single-digit
   to tens of ms) already dwarfs a sub-millisecond difference in commit
   cost.
 - **Read — the one that matters, since zsh ghost-text calls `suggest` on
-  every keystroke**: at 100k rows, cmdtrail's real indexed `suggest`
-  query (236ms) is *slower* than a naive full linear scan of a flat
-  JSON-L file (80ms). Root cause: the "everywhere else" fallback tier's
-  `ORDER BY ts DESC LIMIT 500` has no index on `ts`, so it still forces a
-  scan-and-sort of nearly the whole table even though the exact-cwd/
-  same-repo tiers are properly indexed. This is a real, fixable
-  regression the benchmark surfaced — not implemented here since it's new
-  scope beyond this comparison, but `CREATE INDEX ON commands(ts)` (or
-  restructuring the global-tier query to avoid the sort) is the concrete
-  next step if `suggest` latency matters on a large history.
+  every keystroke**: the *before* column above is the bug — at 100k rows,
+  cmdtrail's real `suggest` query took 236ms, *slower* than a naive full
+  linear scan of a flat JSON-L file (77ms). Root cause: the "everywhere
+  else" fallback tier's `ORDER BY ts DESC LIMIT 500` had no index on
+  `ts`, forcing a scan-and-sort of nearly the whole table even though the
+  exact-cwd/same-repo tiers were properly indexed. Fixed: `CREATE INDEX
+  idx_commands_ts ON commands(ts)` lets SQLite walk the index in `ts`
+  order and stop at 500 matches instead of sorting everything. Confirmed
+  by re-running this same benchmark — `suggest` is now flat at ~0.8-0.9ms
+  regardless of N (295x faster at 100k rows), comfortably beating the
+  JSON-L scan it used to lose to.
 
 ## Not yet built (phase 2 candidates)
 
@@ -193,10 +195,9 @@ Two findings, reported as measured rather than as expected:
   a build predating this normalization keep their original casing.
 - The lowest-weight "run anywhere" suggestion tier draws from a bounded,
   most-recent sample (500 rows) of history outside the current cwd/repo,
-  not the full table, to keep `suggest` cheap on large histories — though
-  the `ORDER BY ts DESC LIMIT 500` behind that sample isn't itself
-  indexed, so it's not as cheap as it should be; see "Storage benchmark"
-  for measured numbers and the fix.
+  not the full table, to keep `suggest` cheap on large histories. Backed
+  by an index on `ts` so the `ORDER BY ts DESC LIMIT 500` behind it stays
+  cheap as history grows — see "Storage benchmark" for measured numbers.
 - The ignore list (see "Ignoring commands") is a manual opt-out, not
   automatic secret detection — nothing scans command text for
   credential-shaped strings, so an un-listed command with a secret in it
