@@ -1,0 +1,60 @@
+# cmdtrail
+
+Per-directory command history capture and suggestion, for PowerShell, bash, and zsh.
+
+## What it does
+
+Every command you run gets logged with its working directory, git repo root
+(if any), shell, exit code, and timestamp. `cmdtrail suggest` then ranks past
+commands for wherever you currently are:
+
+1. commands run in this exact directory rank highest
+2. commands run elsewhere in the same git repo rank next
+3. everything else ranks lowest
+
+Within each tier, more recent and more frequent commands win, and commands
+that previously failed (non-zero exit) are discounted but not hidden.
+
+## Build
+
+    cargo build --release
+    # binary at target/release/cmdtrail — put it on PATH
+
+## Install the shell hook
+
+PowerShell (`$PROFILE`):
+
+    cmdtrail init pwsh >> $PROFILE
+
+bash (`~/.bashrc`):
+
+    echo 'eval "$(cmdtrail init bash)"' >> ~/.bashrc
+
+zsh (`~/.zshrc`):
+
+    echo 'eval "$(cmdtrail init zsh)"' >> ~/.zshrc
+
+Each hook does two things: logs every command you run on your prompt, and
+binds **Ctrl+G** to open an interactive type-to-filter picker (rendered by
+the binary itself) scoped to your current directory. Selecting an entry
+inserts it into your current line, ready to edit or run.
+
+## CLI
+
+    cmdtrail log <command> --cwd <dir> --shell <name> [--exit-code <n>]
+    cmdtrail suggest [--cwd <dir>] [--limit N] [--query <prefix>] [--pick]
+    cmdtrail init <bash|zsh|pwsh>
+
+Data lives in a SQLite DB at your platform's data dir (e.g.
+`~/.local/share/cmdtrail/history.db` on Linux, `%APPDATA%\cmdtrail\` on
+Windows).
+
+## Not yet built (phase 2 candidates)
+
+- True ghost-text-as-you-type instead of a keybinding-triggered picker.
+  Feasible per-shell but each needs a different mechanism: zsh via a custom
+  `zsh-autosuggestions` strategy, PowerShell via a PSReadLine
+  `ICommandPredictor` plugin (.NET, would need an IPC bridge to this
+  binary), bash has no native equivalent without `ble.sh`.
+- History pruning/export.
+- Cross-machine sync.
