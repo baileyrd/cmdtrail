@@ -40,10 +40,22 @@ function prompt {
     }
 }
 
+# Ctrl+G uses Out-GridView, not `cmdtrail suggest --pick`'s own inline
+# terminal picker. Spawning a process that takes over raw console input
+# from *inside* a PSReadLine key handler -- which is itself mid-way
+# through owning console input -- deadlocks on Windows: the two never
+# agree on who owns the console's raw-mode/input state, and the child
+# process hangs forever waiting for keystrokes that never arrive.
+# Out-GridView is a separate GUI window with no console I/O at all, so
+# it can't hit that class of problem.
 Set-PSReadLineKeyHandler -Chord 'Ctrl+g' -ScriptBlock {
     $cwd = (Get-Location).Path
-    $suggestion = & cmdtrail suggest --cwd $cwd --pick 2>$null
-    if ($LASTEXITCODE -eq 0 -and $suggestion) {
+    $items = & cmdtrail suggest --cwd $cwd --limit 200 2>$null
+    if (-not $items) {
+        return
+    }
+    $suggestion = $items | Out-GridView -Title 'cmdtrail' -OutputMode Single
+    if ($suggestion) {
         [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
         [Microsoft.PowerShell.PSConsoleReadLine]::Insert($suggestion)
     }
