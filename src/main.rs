@@ -1,5 +1,6 @@
 mod db;
 mod git;
+mod ignore;
 mod picker;
 mod rank;
 
@@ -66,10 +67,13 @@ fn main() -> Result<()> {
             shell,
             exit_code,
         } => {
-            let cwd = git::normalize_path(&cwd);
-            let git_root = git::find_git_root(std::path::Path::new(&cwd))
-                .map(|p| git::normalize_path(&p.to_string_lossy()));
-            database.log(&command, &cwd, git_root.as_deref(), &shell, exit_code, now_ts())?;
+            let patterns = ignore::load_patterns();
+            if !ignore::is_ignored(&patterns, &command) {
+                let cwd = git::normalize_path(&cwd);
+                let git_root = git::find_git_root(std::path::Path::new(&cwd))
+                    .map(|p| git::normalize_path(&p.to_string_lossy()));
+                database.log(&command, &cwd, git_root.as_deref(), &shell, exit_code, now_ts())?;
+            }
         }
         Command::Suggest {
             cwd,

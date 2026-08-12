@@ -17,13 +17,18 @@ pub struct Db {
     conn: Connection,
 }
 
-/// `~/.local/share/cmdtrail/history.db` on Linux/macOS,
-/// `%APPDATA%\cmdtrail\history.db` on Windows.
-pub fn default_db_path() -> Result<PathBuf> {
+/// The cmdtrail data directory: `~/.local/share/cmdtrail/` on Linux/macOS,
+/// `%APPDATA%\cmdtrail\` on Windows. Also holds `ignore.txt` (see
+/// `crate::ignore`).
+pub fn default_dir() -> Result<PathBuf> {
     let base = dirs::data_dir().context("could not resolve platform data directory")?;
     let dir = base.join("cmdtrail");
     std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("history.db"))
+    Ok(dir)
+}
+
+pub fn default_db_path() -> Result<PathBuf> {
+    Ok(default_dir()?.join("history.db"))
 }
 
 impl Db {

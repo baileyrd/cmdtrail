@@ -49,6 +49,22 @@ Data lives in a SQLite DB at your platform's data dir (e.g.
 `~/.local/share/cmdtrail/history.db` on Linux, `%APPDATA%\cmdtrail\` on
 Windows).
 
+## Ignoring commands
+
+Commands matching a pattern in `<data dir>/ignore.txt` are never logged —
+skipped before the database write, not stored and then filtered. The file
+is created (as a commented-out template) the first time `cmdtrail log` runs.
+One pattern per line:
+
+    # substring match, case-insensitive, matches anywhere in the command
+    password
+
+    # glob match against the whole command; '*' matches any run of chars
+    curl*Authorization*
+    export*API_KEY=*
+
+Blank lines and lines starting with `#` are ignored.
+
 ## Not yet built (phase 2 candidates)
 
 - True ghost-text-as-you-type instead of a keybinding-triggered picker.
@@ -58,9 +74,6 @@ Windows).
   binary), bash has no native equivalent without `ble.sh`.
 - History pruning/export.
 - Cross-machine sync.
-- Secret redaction / an ignore-list for commands that shouldn't be logged
-  (e.g. ones with inline tokens or passwords). Command text is currently
-  stored verbatim and unencrypted, indefinitely, with no opt-out.
 
 ## Known limitations
 
@@ -71,3 +84,7 @@ Windows).
 - The lowest-weight "run anywhere" suggestion tier draws from a bounded,
   most-recent sample (500 rows) of history outside the current cwd/repo,
   not the full table, to keep `suggest` cheap on large histories.
+- The ignore list (see "Ignoring commands") is a manual opt-out, not
+  automatic secret detection — nothing scans command text for
+  credential-shaped strings, so an un-listed command with a secret in it
+  is still logged verbatim.
