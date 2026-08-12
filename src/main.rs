@@ -1,4 +1,5 @@
 mod db;
+mod duration;
 mod git;
 mod ignore;
 mod picker;
@@ -39,6 +40,24 @@ enum Command {
         /// Launch the interactive picker and print only the chosen command.
         #[arg(long)]
         pick: bool,
+    },
+    /// Export all history as JSON Lines (one JSON object per line),
+    /// oldest first, to stdout or a file.
+    Export {
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Delete history entries older than a given age (e.g. "90d", "6m").
+    Prune {
+        /// Duration suffix: h(ours), d(ays), w(eeks), m(onths, ~30d), y(ears, ~365d).
+        #[arg(long = "older-than", value_parser = duration::parse)]
+        older_than: i64,
+        /// Report how many entries would be deleted without deleting them.
+        #[arg(long)]
+        dry_run: bool,
+        /// Reclaim disk space after deleting (rewrites the whole DB file).
+        #[arg(long)]
+        vacuum: bool,
     },
     /// Print the shell hook script for the given shell.
     Init { shell: ShellKind },
@@ -104,6 +123,43 @@ fn main() -> Result<()> {
             } else {
                 for r in ranked.into_iter().take(limit) {
                     println!("{}", r.command);
+                }
+            }
+        }
+        Command::Export { out } => {
+            let count = match out {
+                Some(path) => {
+                    let file = std::fs::File::create(&path)
+                        .with_context(|| format!("could not create {path}"))?;
+                    let mut writer = std::io::BufWriter::new(file);
+                    database.export_all(&mut writer)?
+                }
+                None => {
+                    let stdout = std::io::stdout();
+                    let mut writer = std::io::BufWriter::new(stdout.lock());
+                    database.export_all(&mut writer)?
+                }
+            };
+            // Status goes to stderr: stdout carries the JSON Lines data
+            // itself when --out isn't given, and must stay clean for
+            // piping (e.g. `cmdtrail export > history.jsonl`).
+            eprintln!("exported {count} entries");
+        }
+        Command::Prune {
+            older_than,
+            dry_run,
+            vacuum,
+        } => {
+            let cutoff = now_ts() - older_than;
+            if dry_run {
+                let count = database.count_older_than(cutoff)?;
+                println!("{count} entries older than the cutoff would be deleted (dry run, nothing changed)");
+            } else {
+                let deleted = database.prune_older_than(cutoff)?;
+                println!("deleted {deleted} entries");
+                if vacuum {
+                    database.vacuum()?;
+                    println!("vacuumed database");
                 }
             }
         }

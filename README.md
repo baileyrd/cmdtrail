@@ -62,6 +62,8 @@ PowerShell and bash don't have this yet — see "Not yet built" for why.
 
     cmdtrail log <command> --cwd <dir> --shell <name> [--exit-code <n>]
     cmdtrail suggest [--cwd <dir>] [--limit N] [--query <prefix>] [--pick]
+    cmdtrail export [--out <path>]
+    cmdtrail prune --older-than <duration> [--dry-run] [--vacuum]
     cmdtrail init <bash|zsh|pwsh>
 
 Data lives in a SQLite DB at your platform's data dir (e.g.
@@ -84,6 +86,27 @@ One pattern per line:
 
 Blank lines and lines starting with `#` are ignored.
 
+## Export & pruning
+
+`cmdtrail export` writes every history row as JSON Lines (one JSON object
+per line, oldest first) to stdout, or to a file with `--out`:
+
+    cmdtrail export --out history.jsonl
+
+Each line: `{"command","cwd","git_root","shell","exit_code","ts"}`.
+
+`cmdtrail prune --older-than <duration>` deletes entries older than a
+given age. Duration is `<number><unit>` with unit `h`/`d`/`w`/`m`/`y`
+(hours/days/weeks/~30-day months/~365-day years):
+
+    cmdtrail prune --older-than 90d --dry-run   # report count only, no deletes
+    cmdtrail prune --older-than 90d             # actually deletes
+    cmdtrail prune --older-than 90d --vacuum    # also reclaims disk space
+
+`--vacuum` rewrites the whole database file to reclaim space freed by the
+delete; it's separate and opt-in because it's comparatively expensive and
+briefly needs up to ~2x the DB's disk space.
+
 ## Not yet built (phase 2 candidates)
 
 - Ghost-text-as-you-type for PowerShell and bash (zsh has it — see above).
@@ -100,7 +123,6 @@ Blank lines and lines starting with `#` are ignored.
     either without a way to compile/run and verify it (no .NET SDK, no
     ble.sh install, no working WSL on the dev machine this was built on)
     would mean shipping untested shell-integration code.
-- History pruning/export.
 - Cross-machine sync.
 
 ## Known limitations

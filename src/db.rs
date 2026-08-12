@@ -1,6 +1,8 @@
 use crate::rank::HistoryEntry;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+use serde::Serialize;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,6 +17,21 @@ const GLOBAL_CANDIDATE_LIMIT: i64 = 500;
 
 pub struct Db {
     conn: Connection,
+}
+
+/// One history row as written by `cmdtrail export` — JSON Lines, one
+/// object per line, ordered chronologically. Deliberately mirrors the
+/// `commands` table columns directly rather than `rank::HistoryEntry`
+/// (which omits `shell` since ranking doesn't use it); export is meant
+/// to be a faithful dump, not a ranking input.
+#[derive(Debug, Serialize)]
+pub struct ExportRecord {
+    pub command: String,
+    pub cwd: String,
+    pub git_root: Option<String>,
+    pub shell: String,
+    pub exit_code: Option<i32>,
+    pub ts: i64,
 }
 
 /// The cmdtrail data directory: `~/.local/share/cmdtrail/` on Linux/macOS,
@@ -136,6 +153,63 @@ impl Db {
 
         Ok(out)
     }
+
+    /// Write every history row as JSON Lines (one JSON object per line),
+    /// oldest first, to `out`. Streams row-by-row rather than collecting
+    /// into a `Vec` first, so this stays cheap on very large histories.
+    /// Returns the number of rows written.
+    pub fn export_all<W: Write>(&self, out: &mut W) -> Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT command, cwd, git_root, shell, exit_code, ts FROM commands ORDER BY ts ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ExportRecord {
+                command: row.get(0)?,
+                cwd: row.get(1)?,
+                git_root: row.get(2)?,
+                shell: row.get(3)?,
+                exit_code: row.get(4)?,
+                ts: row.get(5)?,
+            })
+        })?;
+
+        let mut count = 0usize;
+        for r in rows {
+            let record = r?;
+            serde_json::to_writer(&mut *out, &record).context("failed to serialize history record")?;
+            out.write_all(b"\n")?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Count rows with `ts < cutoff_ts`, without deleting anything — the
+    /// `cmdtrail prune --dry-run` query.
+    pub fn count_older_than(&self, cutoff_ts: i64) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM commands WHERE ts < ?1",
+            params![cutoff_ts],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Delete rows with `ts < cutoff_ts`. Returns the number of rows
+    /// deleted. Does not reclaim disk space on its own — see `vacuum`.
+    pub fn prune_older_than(&self, cutoff_ts: i64) -> Result<usize> {
+        let deleted = self.conn.execute("DELETE FROM commands WHERE ts < ?1", params![cutoff_ts])?;
+        Ok(deleted)
+    }
+
+    /// Rewrite the whole database file to reclaim space freed by deletes.
+    /// Opt-in and separate from `prune_older_than`: `VACUUM` rewrites the
+    /// entire file, which is comparatively expensive and briefly needs
+    /// up to ~2x the DB's disk space, so it shouldn't happen implicitly
+    /// on every prune.
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
 }
 
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<HistoryEntry> {
@@ -214,6 +288,67 @@ mod tests {
             commands.contains(&"cmd_elsewhere"),
             "a target outside any git repo must still see the global fallback tier"
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn export_all_writes_chronological_jsonl() {
+        let path = temp_db_path("export");
+        let db = Db::open(&path).unwrap();
+
+        db.log("second", "/repo", None, "bash", Some(0), 200).unwrap();
+        db.log("first", "/repo", None, "bash", Some(1), 100).unwrap();
+
+        let mut buf: Vec<u8> = Vec::new();
+        let count = db.export_all(&mut buf).unwrap();
+        assert_eq!(count, 2);
+
+        let text = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(first["command"], "first");
+        assert_eq!(first["exit_code"], 1);
+        assert_eq!(second["command"], "second");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn prune_deletes_only_entries_older_than_cutoff() {
+        let path = temp_db_path("prune");
+        let db = Db::open(&path).unwrap();
+
+        db.log("old", "/repo", None, "bash", Some(0), 100).unwrap();
+        db.log("new", "/repo", None, "bash", Some(0), 1000).unwrap();
+
+        assert_eq!(db.count_older_than(500).unwrap(), 1);
+
+        let deleted = db.prune_older_than(500).unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = db.candidates("/repo", None).unwrap();
+        let commands: Vec<&str> = remaining.iter().map(|e| e.command.as_str()).collect();
+        assert_eq!(commands, vec!["new"]);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn prune_dry_run_via_count_does_not_delete() {
+        let path = temp_db_path("prune-dry-run");
+        let db = Db::open(&path).unwrap();
+
+        db.log("old", "/repo", None, "bash", Some(0), 100).unwrap();
+
+        // Simulate --dry-run: only count, never call prune_older_than.
+        assert_eq!(db.count_older_than(500).unwrap(), 1);
+
+        let remaining = db.candidates("/repo", None).unwrap();
+        assert_eq!(remaining.len(), 1, "dry-run must not have deleted anything");
 
         cleanup(&path);
     }
