@@ -59,6 +59,15 @@ enum Command {
         #[arg(long)]
         vacuum: bool,
     },
+    /// Merge history from JSON Lines files (e.g. from `cmdtrail export`),
+    /// skipping entries already present. This is cross-machine sync: point
+    /// your own file-sync tool (Dropbox/Syncthing/git/rsync/...) at each
+    /// machine's export output, then import it wherever it shows up.
+    Import {
+        /// One or more JSON Lines files.
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
     /// Print the shell hook script for the given shell.
     Init { shell: ShellKind },
 }
@@ -77,7 +86,7 @@ fn now_ts() -> i64 {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let db_path = db::default_db_path()?;
-    let database = db::Db::open(&db_path)?;
+    let mut database = db::Db::open(&db_path)?;
 
     match cli.command {
         Command::Log {
@@ -162,6 +171,24 @@ fn main() -> Result<()> {
                     println!("vacuumed database");
                 }
             }
+        }
+        Command::Import { paths } => {
+            let mut records: Vec<db::ExportRecord> = Vec::new();
+            for path in &paths {
+                let content =
+                    std::fs::read_to_string(path).with_context(|| format!("could not read {path}"))?;
+                for (i, line) in content.lines().enumerate() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let record: db::ExportRecord = serde_json::from_str(line)
+                        .with_context(|| format!("{path}:{}: invalid JSON line", i + 1))?;
+                    records.push(record);
+                }
+            }
+            let stats = database.import(records)?;
+            println!("imported {} entries, skipped {} duplicates already present", stats.inserted, stats.skipped);
         }
         Command::Init { shell } => {
             let script = match shell {

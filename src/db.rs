@@ -1,7 +1,7 @@
 use crate::rank::HistoryEntry;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,7 +24,7 @@ pub struct Db {
 /// `commands` table columns directly rather than `rank::HistoryEntry`
 /// (which omits `shell` since ranking doesn't use it); export is meant
 /// to be a faithful dump, not a ranking input.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExportRecord {
     pub command: String,
     pub cwd: String,
@@ -32,6 +32,13 @@ pub struct ExportRecord {
     pub shell: String,
     pub exit_code: Option<i32>,
     pub ts: i64,
+}
+
+/// Result of `Db::import`.
+#[derive(Debug, PartialEq)]
+pub struct ImportStats {
+    pub inserted: usize,
+    pub skipped: usize,
 }
 
 /// The cmdtrail data directory: `~/.local/share/cmdtrail/` on Linux/macOS,
@@ -210,6 +217,51 @@ impl Db {
         self.conn.execute_batch("VACUUM")?;
         Ok(())
     }
+
+    /// Merge `records` into the table, skipping any that already exist
+    /// (exact match on every column, including `ts`) so re-importing the
+    /// same export file — or overlapping exports from multiple machines —
+    /// is idempotent. This is the whole of "cross-machine sync": point
+    /// your own file-sync tool (Dropbox/Syncthing/git/rsync/...) at each
+    /// machine's `cmdtrail export` output, then `cmdtrail import` it
+    /// wherever it shows up. No network code, no live-database sharing —
+    /// syncing a SQLite+WAL file directly across machines via a generic
+    /// file-sync tool risks corruption, so this never does that.
+    ///
+    /// Requires `&mut self` (unlike every other `Db` method) because
+    /// rusqlite's transaction API needs an exclusive borrow; wrapping the
+    /// whole import in one transaction keeps a large import atomic and
+    /// fast (autocommit-per-row would be both slower and leave a partial
+    /// import on failure).
+    pub fn import<I: IntoIterator<Item = ExportRecord>>(&mut self, records: I) -> Result<ImportStats> {
+        let tx = self.conn.transaction()?;
+        let mut inserted = 0usize;
+        let mut skipped = 0usize;
+        {
+            let mut exists_stmt = tx.prepare(
+                "SELECT 1 FROM commands
+                 WHERE command = ?1 AND cwd = ?2 AND git_root IS ?3
+                   AND shell = ?4 AND exit_code IS ?5 AND ts = ?6
+                 LIMIT 1",
+            )?;
+            let mut insert_stmt = tx.prepare(
+                "INSERT INTO commands (command, cwd, git_root, shell, exit_code, ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for r in records {
+                let dup = exists_stmt
+                    .exists(params![r.command, r.cwd, r.git_root, r.shell, r.exit_code, r.ts])?;
+                if dup {
+                    skipped += 1;
+                    continue;
+                }
+                insert_stmt.execute(params![r.command, r.cwd, r.git_root, r.shell, r.exit_code, r.ts])?;
+                inserted += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(ImportStats { inserted, skipped })
+    }
 }
 
 fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<HistoryEntry> {
@@ -349,6 +401,78 @@ mod tests {
 
         let remaining = db.candidates("/repo", None).unwrap();
         assert_eq!(remaining.len(), 1, "dry-run must not have deleted anything");
+
+        cleanup(&path);
+    }
+
+    fn record(cmd: &str, cwd: &str, ts: i64) -> ExportRecord {
+        ExportRecord {
+            command: cmd.to_string(),
+            cwd: cwd.to_string(),
+            git_root: None,
+            shell: "bash".to_string(),
+            exit_code: Some(0),
+            ts,
+        }
+    }
+
+    #[test]
+    fn import_inserts_new_entries() {
+        let path = temp_db_path("import-new");
+        let mut db = Db::open(&path).unwrap();
+
+        let stats = db
+            .import(vec![record("a", "/repo", 100), record("b", "/repo", 200)])
+            .unwrap();
+        assert_eq!(stats, ImportStats { inserted: 2, skipped: 0 });
+
+        let entries = db.candidates("/repo", None).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn reimporting_the_same_records_is_fully_deduped() {
+        let path = temp_db_path("import-dedup");
+        let mut db = Db::open(&path).unwrap();
+
+        let records = vec![record("a", "/repo", 100), record("b", "/repo", 200)];
+        db.import(records.clone()).unwrap();
+        let second = db.import(records).unwrap();
+
+        assert_eq!(second, ImportStats { inserted: 0, skipped: 2 });
+        assert_eq!(db.candidates("/repo", None).unwrap().len(), 2);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn import_reports_partial_overlap_correctly() {
+        let path = temp_db_path("import-partial");
+        let mut db = Db::open(&path).unwrap();
+
+        db.import(vec![record("a", "/repo", 100)]).unwrap();
+        let stats = db
+            .import(vec![record("a", "/repo", 100), record("c", "/repo", 300)])
+            .unwrap();
+
+        assert_eq!(stats, ImportStats { inserted: 1, skipped: 1 });
+        assert_eq!(db.candidates("/repo", None).unwrap().len(), 2);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn import_treats_differing_ts_as_a_distinct_entry() {
+        let path = temp_db_path("import-distinct-ts");
+        let mut db = Db::open(&path).unwrap();
+
+        db.import(vec![record("a", "/repo", 100)]).unwrap();
+        let stats = db.import(vec![record("a", "/repo", 999)]).unwrap();
+
+        assert_eq!(stats, ImportStats { inserted: 1, skipped: 0 });
+        assert_eq!(db.candidates("/repo", None).unwrap().len(), 2);
 
         cleanup(&path);
     }

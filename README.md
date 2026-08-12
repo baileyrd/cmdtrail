@@ -64,6 +64,7 @@ PowerShell and bash don't have this yet — see "Not yet built" for why.
     cmdtrail suggest [--cwd <dir>] [--limit N] [--query <prefix>] [--pick]
     cmdtrail export [--out <path>]
     cmdtrail prune --older-than <duration> [--dry-run] [--vacuum]
+    cmdtrail import <path>...
     cmdtrail init <bash|zsh|pwsh>
 
 Data lives in a SQLite DB at your platform's data dir (e.g.
@@ -107,6 +108,28 @@ given age. Duration is `<number><unit>` with unit `h`/`d`/`w`/`m`/`y`
 delete; it's separate and opt-in because it's comparatively expensive and
 briefly needs up to ~2x the DB's disk space.
 
+## Cross-machine sync
+
+`cmdtrail import <path>...` merges history from one or more
+`cmdtrail export` JSON-L files into the local database, skipping any
+entry that's an exact match (every column, including timestamp) of one
+already present — so importing the same file twice, or two exports that
+overlap, is idempotent.
+
+That's the entire sync story: there's no network code and no sharing a
+live database file between machines (syncing a SQLite+WAL file directly
+through a generic file-sync tool risks corruption). Instead:
+
+    # on each machine, periodically:
+    cmdtrail export --out ~/Dropbox/cmdtrail/$(hostname).jsonl
+
+    # point Dropbox/Syncthing/git/rsync/OneDrive/... at that folder, then
+    # on each machine, periodically:
+    cmdtrail import ~/Dropbox/cmdtrail/*.jsonl
+
+Every machine converges to the union of everyone's history. Export size
+only grows, so pair this with `cmdtrail prune` if that matters to you.
+
 ## Not yet built (phase 2 candidates)
 
 - Ghost-text-as-you-type for PowerShell and bash (zsh has it — see above).
@@ -123,7 +146,6 @@ briefly needs up to ~2x the DB's disk space.
     either without a way to compile/run and verify it (no .NET SDK, no
     ble.sh install, no working WSL on the dev machine this was built on)
     would mean shipping untested shell-integration code.
-- Cross-machine sync.
 
 ## Known limitations
 
